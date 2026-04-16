@@ -11,18 +11,20 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
+import * as FileSystem from 'expo-file-system/legacy';
+import { decode } from 'base64-arraybuffer';
 import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { getStoredSession } from '../lib/session';
+import {
+  calculateMatchScore,
+  Coordinates,
+  ItemCandidate,
+  MIN_MATCH_SCORE,
+  ReportType,
+} from '../lib/matching';
 
 const CATEGORIES = ['Wallet', 'Phone', 'Keys', 'Bag', 'ID Card', 'Other'];
-
-type ReportType = 'lost' | 'found';
-
-type Coordinates = {
-  lat: number;
-  lng: number;
-};
 
 export default function ReportScreen() {
   const [type, setType] = useState<ReportType>('lost');
@@ -79,33 +81,56 @@ export default function ReportScreen() {
     let imageUrl: string | null = null;
 
     if (imageUri) {
-      const fileName = `${session.id}-${Date.now()}.jpg`;
-      const imageResponse = await fetch(imageUri);
-      const imageBlob = await imageResponse.blob();
+      try {
+        const extension = imageUri.split('.').pop()?.toLowerCase();
+        const normalizedExtension =
+          extension && ['jpg', 'jpeg', 'png', 'webp'].includes(extension) ? extension : 'jpg';
+        const fileName = `${session.id}-${Date.now()}.${normalizedExtension}`;
+        const base64 = await FileSystem.readAsStringAsync(imageUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
 
-      const { error: uploadError } = await supabase.storage
-        .from('item-images')
-        .upload(fileName, imageBlob, { contentType: 'image/jpeg', upsert: false });
+        const arrayBuffer = decode(base64);
+        const contentType =
+          normalizedExtension === 'png'
+            ? 'image/png'
+            : normalizedExtension === 'webp'
+              ? 'image/webp'
+              : 'image/jpeg';
 
-      if (uploadError) {
+        const { error: uploadError } = await supabase.storage
+          .from('item-images')
+          .upload(fileName, arrayBuffer, { contentType, upsert: false });
+
+        if (uploadError) {
+          setLoading(false);
+          Alert.alert('Upload error', uploadError.message);
+          return;
+        }
+
+        imageUrl = supabase.storage.from('item-images').getPublicUrl(fileName).data.publicUrl;
+      } catch (error) {
         setLoading(false);
-        Alert.alert('Upload error', uploadError.message);
+        const message = error instanceof Error ? error.message : 'Unable to process selected image.';
+        Alert.alert('Upload error', message);
         return;
       }
-
-      imageUrl = supabase.storage.from('item-images').getPublicUrl(fileName).data.publicUrl;
     }
 
-    const { error: insertError } = await supabase.from('items').insert({
-      user_id: session.id,
-      type,
-      title: title.trim(),
-      description: description.trim() || null,
-      category,
-      image_url: imageUrl,
-      lat: coordinates?.lat ?? null,
-      lng: coordinates?.lng ?? null,
-    });
+    const { data: insertedRows, error: insertError } = await supabase
+      .from('items')
+      .insert({
+        user_id: session.id,
+        type,
+        title: title.trim(),
+        description: description.trim() || null,
+        category,
+        image_url: imageUrl,
+        lat: coordinates?.lat ?? null,
+        lng: coordinates?.lng ?? null,
+      })
+      .select('id')
+      .limit(1);
 
     setLoading(false);
 
@@ -114,7 +139,75 @@ export default function ReportScreen() {
       return;
     }
 
-    Alert.alert('Posted', 'Your report has been created.');
+    const insertedId = insertedRows?.[0]?.id as string | undefined;
+
+    if (insertedId) {
+      const oppositeType: ReportType = type === 'lost' ? 'found' : 'lost';
+      const { data: candidates, error: candidatesError } = await supabase
+        .from('items')
+        .select('id, user_id, type, title, description, category, lat, lng, status')
+        .eq('type', oppositeType)
+        .eq('status', 'open')
+        .neq('user_id', session.id);
+
+      if (!candidatesError && candidates) {
+        const draft = {
+          type,
+          title: title.trim(),
+          description: description.trim(),
+          category,
+          coords: coordinates,
+        };
+
+        const strongMatches = (candidates as ItemCandidate[])
+          .map((candidate) => ({
+            candidate,
+            score: calculateMatchScore(draft, candidate),
+          }))
+          .filter(({ score }) => score >= MIN_MATCH_SCORE)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 5);
+
+        for (const entry of strongMatches) {
+          const lostItemId = type === 'lost' ? insertedId : entry.candidate.id;
+          const foundItemId = type === 'found' ? insertedId : entry.candidate.id;
+
+          const { data: matchRows } = await supabase
+            .from('matches')
+            .upsert(
+              {
+                lost_item_id: lostItemId,
+                found_item_id: foundItemId,
+                score: entry.score,
+                status: 'open',
+              },
+              { onConflict: 'lost_item_id,found_item_id' }
+            )
+            .select('id')
+            .limit(1);
+
+          const matchId = matchRows?.[0]?.id as string | undefined;
+
+          if (!matchId) {
+            continue;
+          }
+
+          const lostUserId = type === 'lost' ? session.id : entry.candidate.user_id;
+          const foundUserId = type === 'found' ? session.id : entry.candidate.user_id;
+
+          await supabase.from('chat_threads').upsert(
+            {
+              match_id: matchId,
+              lost_user_id: lostUserId,
+              found_user_id: foundUserId,
+            },
+            { onConflict: 'match_id' }
+          );
+        }
+      }
+    }
+
+    Alert.alert('Posted', 'Your report has been created and match scan completed.');
     router.back();
   };
 
