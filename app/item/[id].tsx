@@ -3,6 +3,8 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import MapView, { Marker } from 'react-native-maps';
 import { supabase } from '../../lib/supabase';
 import { getStoredSession } from '../../lib/session';
 import { calculateMatchScore, Coordinates, ItemCandidate, MIN_MATCH_SCORE } from '../../lib/matching';
@@ -267,6 +270,30 @@ export default function ItemDetailsScreen() {
 
       {typeof item.lat === 'number' && typeof item.lng === 'number' ? (
         <View style={styles.locationCard}>
+          {Platform.OS === 'web' ? (
+            <TouchableOpacity
+              onPress={() => Linking.openURL(`https://maps.google.com/?q=${item.lat},${item.lng}`)}
+            >
+              <Text style={styles.webLocationLink}>View on Google Maps</Text>
+            </TouchableOpacity>
+          ) : (
+            <MapView
+              style={styles.locationMap}
+              initialRegion={{
+                latitude: item.lat,
+                longitude: item.lng,
+                latitudeDelta: 0.01,
+                longitudeDelta: 0.01,
+              }}
+              scrollEnabled={false}
+            >
+              <Marker
+                coordinate={{ latitude: item.lat, longitude: item.lng }}
+                title={item.title}
+                description={item.category || 'General'}
+              />
+            </MapView>
+          )}
           <Text style={styles.locationText}>
             Location: {item.lat.toFixed(4)}, {item.lng.toFixed(4)}
           </Text>
@@ -346,9 +373,20 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 10,
   },
+  locationMap: {
+    width: '100%',
+    height: 200,
+    borderRadius: 14,
+    marginBottom: 10,
+  },
   locationText: {
     color: '#374151',
     fontSize: 13,
+  },
+  webLocationLink: {
+    color: '#C2410C',
+    fontWeight: '600',
+    marginBottom: 8,
   },
   date: {
     fontSize: 12,

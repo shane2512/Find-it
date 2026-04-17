@@ -2,6 +2,8 @@ import { useState } from 'react';
 import {
   Alert,
   Image,
+  Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,6 +16,7 @@ import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
 import { router } from 'expo-router';
+import MapView, { Marker } from 'react-native-maps';
 import { supabase } from '../lib/supabase';
 import { getStoredSession } from '../lib/session';
 import {
@@ -265,9 +268,40 @@ export default function ReportScreen() {
 
       <TouchableOpacity style={styles.secondaryButton} onPress={getLocation}>
         <Text style={styles.secondaryButtonText}>
-          {coordinates ? 'Location Tagged' : 'Tag Current Location'}
+          {coordinates ? 'Location Captured - tap to retag' : 'Tag My Location'}
         </Text>
       </TouchableOpacity>
+
+      {coordinates ? (
+        Platform.OS === 'web' ? (
+          <TouchableOpacity
+            style={styles.webLocationCard}
+            onPress={() =>
+              Linking.openURL(
+                `https://maps.google.com/?q=${coordinates.lat},${coordinates.lng}`
+              )
+            }
+          >
+            <Text style={styles.webLocationText}>
+              View tagged location on Google Maps: {coordinates.lat.toFixed(5)},{' '}
+              {coordinates.lng.toFixed(5)}
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <MapView
+            style={styles.mapPreview}
+            initialRegion={{
+              latitude: coordinates.lat,
+              longitude: coordinates.lng,
+              latitudeDelta: 0.005,
+              longitudeDelta: 0.005,
+            }}
+            scrollEnabled={false}
+          >
+            <Marker coordinate={{ latitude: coordinates.lat, longitude: coordinates.lng }} />
+          </MapView>
+        )
+      ) : null}
 
       <TouchableOpacity style={styles.primaryButton} onPress={submitReport} disabled={loading}>
         <Text style={styles.primaryButtonText}>{loading ? 'Posting...' : 'Post Report'}</Text>
@@ -366,6 +400,25 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 12,
     backgroundColor: '#E5E7EB',
+  },
+  mapPreview: {
+    width: '100%',
+    height: 180,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  webLocationCard: {
+    borderWidth: 1,
+    borderColor: '#FEC9B5',
+    backgroundColor: '#FFF7F3',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  webLocationText: {
+    color: '#C2410C',
+    fontSize: 13,
   },
   primaryButton: {
     backgroundColor: '#FF6B35',
